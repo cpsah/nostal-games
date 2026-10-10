@@ -42,7 +42,8 @@ class Database:
         if not name.isidentifier():
             raise ValueError(f"Invalid database name: {name}")
 
-        self.con = mysql.connector.connect(host=m.get("host", "localhost"), port=m.getint("port", 3306), user=m["user"], password=m.get("password", ""))
+        # autocommit: every SELECT sees the latest data (e.g. edits made in MySQL Workbench); run() opens explicit transactions
+        self.con = mysql.connector.connect(host=m.get("host", "localhost"), port=m.getint("port", 3306), user=m["user"], password=m.get("password", ""), autocommit=True)
         self.cur = self.con.cursor()
         self.cur.execute(f"CREATE DATABASE IF NOT EXISTS {name} CHARACTER SET utf8mb4")
         self.cur.execute(f"USE {name}")
@@ -61,12 +62,20 @@ class Database:
         self.cur.execute(sql, params)
         return self.cur.fetchone()
 
-    def run(self, *statements):
-        """Execute (sql, params) pairs as one transaction: all succeed or none do."""
+    def run(self, *statements, guard=None):
+        """Execute (sql, params) pairs as one transaction: all succeed or none do.
+        If guard (sql, params) is given it runs first; when it changes no rows nothing is saved and False is returned."""
         try:
+            self.con.start_transaction()
+            if guard:
+                self.cur.execute(*guard)
+                if self.cur.rowcount == 0:
+                    self.con.rollback()
+                    return False
             for sql, params in statements:
                 self.cur.execute(sql, params)
             self.con.commit()
+            return True
         except mysql.connector.Error:
             self.con.rollback()
             raise
@@ -142,10 +151,12 @@ class PurchaseTable:
     def library(self, username):
         return [r[0] for r in self.db.fetchall("SELECT game FROM purchases WHERE username = %s ORDER BY bought_on", (username,))]
 
-    def buy(self, username, items, new_wallet):
-        """items: {game: price}. Records every purchase and the new wallet in one transaction."""
-        self.db.run(*[("INSERT INTO purchases (username, game, price) VALUES (%s, %s, %s)", (username, g, p)) for g, p in items.items()],
-                    ("UPDATE users SET wallet = %s WHERE username = %s", (new_wallet, username)))
+    def buy(self, username, items):
+        """items: {game: price}. Charges the wallet and records every purchase in one transaction.
+        Returns False (nothing saved) if the wallet stored in MySQL can't cover the total."""
+        cost = sum(items.values())
+        return self.db.run(*[("INSERT INTO purchases (username, game, price) VALUES (%s, %s, %s)", (username, g, p)) for g, p in items.items()],
+                           guard=("UPDATE users SET wallet = wallet - %s WHERE username = %s AND wallet >= %s", (cost, username, cost)))
 
     def all(self):
         return self.db.fetchall("SELECT username, game, price, bought_on FROM purchases ORDER BY bought_on DESC")

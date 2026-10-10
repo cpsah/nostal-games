@@ -14,6 +14,10 @@ from admin import AdminTabs
 B, DB, NAV, LB, TXT, WALT, PRCHS, RED = "#661B49", "#171a21", "#2a475e", "#11F521", "#c7d5e0", "#ffcc00", "#118A1A", "#a32a2a"
 
 def load_screen():
+    setup(800, 600)  # window centred on the screen
+    getcanvas().update()
+    # make the drawing area the same size as the window so (0,0) sits in the middle, not the top-left
+    screensize(getcanvas().winfo_width(), getcanvas().winfo_height())
     title("NOSTALgames loading.....")
     bgcolor("black")
     speed(0)
@@ -93,7 +97,10 @@ class NG(tk.Tk):
 
         # Store UI
         sc = tk.Frame(self.tabs["STORE"], bg=B); sc.pack(side="left", fill="both", expand=1, padx=20, pady=20)
-        self.canv = tk.Canvas(sc, bg=B, highlightthickness=0); self.canv.pack(side="left", fill="both", expand=1)
+        self.canv = tk.Canvas(sc, bg=B, highlightthickness=0, yscrollincrement=1)
+        sb = ttk.Scrollbar(sc, orient="vertical", command=self.canv.yview); sb.pack(side="right", fill="y")
+        self.canv.configure(yscrollcommand=sb.set); self.canv.pack(side="left", fill="both", expand=1)
+        self.bind_scroll()
         self.list_f = tk.Frame(self.canv, bg=B); self.canv.create_window((0,0), window=self.list_f, anchor="nw", width=600)
         self.list_f.bind("<Configure>", lambda e: self.canv.configure(scrollregion=self.canv.bbox("all")))
 
@@ -111,6 +118,19 @@ class NG(tk.Tk):
         ttk.Button(dz, text="RESET DATA", style="Reset.TButton", command=self.reset).pack(side="right")
 
         self.refresh()
+
+    def bind_scroll(self):
+        # mouse wheel (macOS/Windows), mouse wheel (Linux), and trackpad (Tk 9 sends <TouchpadScroll>)
+        self.bind_all("<MouseWheel>", lambda e: self.scroll_store(e, -40 if e.delta > 0 else 40))
+        self.bind_all("<Button-4>", lambda e: self.scroll_store(e, -40))
+        self.bind_all("<Button-5>", lambda e: self.scroll_store(e, 40))
+        try: self.bind_all("<TouchpadScroll>", lambda e: self.scroll_store(e, -int(self.tk.splitlist(self.tk.call("tk::PreciseScrollDeltas", e.delta))[1])))
+        except tk.TclError: pass  # Tk 8.6 has no <TouchpadScroll>; trackpads send <MouseWheel> there
+
+    def scroll_store(self, e, pixels):
+        # only scroll when the pointer is over the store list
+        w = self.winfo_containing(e.x_root, e.y_root)
+        if w and str(w).startswith(str(self.canv)): self.canv.yview_scroll(pixels, "units")
 
     def load_data(self):
         self.wallet = self.db.users.wallet(self.username)
@@ -142,11 +162,9 @@ class NG(tk.Tk):
         if s: self.cart.pop(s[0]); self.lbx.delete(s[0])
 
     def pay(self):
-        cost = sum(self.games[g] for g in self.cart)
-        if self.cart and self.wallet >= cost:
-            self.db.purchases.buy(self.username, {g: self.games[g] for g in self.cart}, self.wallet - cost)
+        if self.cart and self.db.purchases.buy(self.username, {g: self.games[g] for g in self.cart}):
             self.load_data(); self.cart = []; self.lbx.delete(0, "end"); self.refresh(); messagebox.showinfo("OK", "Purchased!")
-        elif self.cart: messagebox.showerror("Error", "Check funds or cart.")
+        elif self.cart: self.load_data(); self.refresh(); messagebox.showerror("Error", "Check funds or cart.")
 
     def reset(self):
         if messagebox.askyesno("Reset", "Wipe all data?"):
