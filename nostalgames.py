@@ -3,6 +3,12 @@ from tkinter import ttk, messagebox
 import os
 from turtle import*
 from colorsys import*
+import mysql.connector
+
+from theme import button_style
+from db import Database
+from login import LoginWindow
+from admin import AdminTabs
 
 # Theme Shorthand
 B, DB, NAV, LB, TXT, WALT, PRCHS, RED = "#661B49", "#171a21", "#2a475e", "#11F521", "#c7d5e0", "#ffcc00", "#118A1A", "#a32a2a"
@@ -22,23 +28,59 @@ def load_screen():
         hideturtle()
     bye()
 
+class DragToCart:
+    """Drag a game row and drop it on the cart area to add it to the cart."""
+
+    def __init__(self, root, drop_zone, on_drop):
+        self.root, self.zone, self.on_drop = root, drop_zone, on_drop
+        self.zone_bg = drop_zone.cget("bg")
+        self.game = self.ghost = None
+
+    def attach(self, game, *widgets):
+        for w in widgets:
+            w.configure(cursor="hand2")
+            w.bind("<ButtonPress-1>", lambda e, g=game: self.start(g))
+            w.bind("<B1-Motion>", self.move)
+            w.bind("<ButtonRelease-1>", self.drop)
+
+    def start(self, game):
+        self.game = game
+
+    def move(self, e):
+        if not self.game: return
+        if not self.ghost:
+            self.ghost = tk.Label(self.root, text=f"🎮 {self.game}", bg=WALT, fg="black", font=("Arial", 11, "bold"), padx=8, pady=4)
+        self.ghost.place(x=e.x_root - self.root.winfo_rootx() + 12, y=e.y_root - self.root.winfo_rooty() + 12)
+        self.ghost.lift()
+        self.zone.configure(bg=NAV if self.over_zone(e) else self.zone_bg)
+
+    def over_zone(self, e):
+        x, y = e.x_root - self.zone.winfo_rootx(), e.y_root - self.zone.winfo_rooty()
+        return 0 <= x < self.zone.winfo_width() and 0 <= y < self.zone.winfo_height()
+
+    def drop(self, e):
+        if self.game and self.ghost and self.over_zone(e): self.on_drop(self.game)
+        if self.ghost: self.ghost.destroy()
+        self.zone.configure(bg=self.zone_bg)
+        self.game = self.ghost = None
+
 class NG(tk.Tk):
     load_screen()
-    def __init__(self):
+    def __init__(self, db, username):
         super().__init__()
         self.title("NOSTALgames"); self.geometry("1000x700"); self.configure(bg=B)
-        self.file, self.cart, self.games = "user_data.txt", [], {"Cyberpunk 2077": 2999, "Elden Ring": 3500, "Stardew Valley": 479, "Hollow Knight": 600, "Doom Eternal": 1799, "Forza Horizon 5": 3499, "Forza Horizon 6": 4599, "Counter Strike 2": 1399, "Subnautica 2":1799, "NBA 2K26":3999, "Red Dead Redemption 2":4999, "FC™ 26": 1625}
+        self.db, self.username, self.cart, self.games = db, username, [], db.games.all()
         self.load_data()
 
         # Styles
-        s = ttk.Style(); s.theme_use('clam')
+        s = ttk.Style(self); s.theme_use('clam')
         s.configure("TNotebook", background=DB, borderwidth=0)
         s.configure("TNotebook.Tab", background=NAV, foreground=TXT, padding=[20, 10], font=("Arial", 11, "bold"))
         s.map("TNotebook.Tab", background=[("selected", B)], foreground=[("selected", "white")])
-        self.button_style("Remove", "#2a2a2a", TXT, RED, 9, 5)
-        self.button_style("Buy", PRCHS, "white", "#14a01f", 12, 10)
-        self.button_style("Reset", RED, "white", "#c43a3a", 10, (20, 5))
-        self.button_style("Price", NAV, LB, "#3a6a8a", 10, 5)
+        button_style(self, "Remove", "#2a2a2a", TXT, RED, 9, 5)
+        button_style(self, "Buy", PRCHS, "white", "#14a01f", 12, 10)
+        button_style(self, "Reset", RED, "white", "#c43a3a", 10, (20, 5))
+        button_style(self, "Price", NAV, LB, "#3a6a8a", 10, 5)
 
         # Header
         h = tk.Frame(self, bg=DB, height=60); h.pack(fill="x"); h.pack_propagate(0)
@@ -56,7 +98,9 @@ class NG(tk.Tk):
         self.list_f.bind("<Configure>", lambda e: self.canv.configure(scrollregion=self.canv.bbox("all")))
 
         cf = tk.Frame(self.tabs["STORE"], bg=DB, width=300, padx=20, pady=20); cf.pack(side="right", fill="y"); cf.pack_propagate(0)
-        tk.Label(cf, text="SHOPPING CART", bg=DB, fg=TXT, font=("Arial", 12, "bold")).pack(pady=10)
+        tk.Label(cf, text="SHOPPING CART", bg=DB, fg=TXT, font=("Arial", 12, "bold")).pack(pady=(10, 0))
+        tk.Label(cf, text="drag games here", bg=DB, fg=TXT, font=("Arial", 9)).pack(pady=(0, 10))
+        self.drag = DragToCart(self, cf, self.add)
         self.lbx = tk.Listbox(cf, bg=B, fg=TXT, bd=0, font=("Arial", 10), selectbackground=WALT, selectforeground="black", activestyle="none", highlightthickness=0, exportselection=False); self.lbx.pack(fill="both", expand=1)
 
         ttk.Button(cf, text="REMOVE SELECTED", style="Remove.TButton", command=self.rem).pack(fill="x", pady=5)
@@ -68,23 +112,12 @@ class NG(tk.Tk):
 
         self.refresh()
 
-    def button_style(self, name, bg, fg, active_bg, size, padding):
-        # ttk buttons honour custom colours on macOS; tk.Button ignores bg there and hides the text
-        s = ttk.Style()
-        s.configure(f"{name}.TButton", background=bg, foreground=fg, font=("Arial", size, "bold"), borderwidth=0, padding=padding)
-        s.map(f"{name}.TButton", background=[("pressed", active_bg), ("active", active_bg)], foreground=[("pressed", fg), ("active", fg)])
-
     def load_data(self):
-        self.wallet, self.library = 10000.0, []
-        if os.path.exists(self.file):
-            with open(self.file, "r") as f:
-                for line in f:
-                    k, v = line.strip().split(":", 1)
-                    if k == "wallet": self.wallet = float(v)
-                    elif k == "library": self.library = [x.strip() for x in v.split(",") if x.strip()]
+        self.wallet = self.db.users.wallet(self.username)
+        self.library = self.db.purchases.library(self.username)
 
     def save_data(self):
-        with open(self.file, "w") as f: f.write(f"wallet:{self.wallet}\nlibrary:{','.join(self.library)}")
+        self.db.users.set_wallet(self.username, self.wallet)
 
     def refresh(self):
         self.w_lbl.config(text=f"WALLET: ₹{self.wallet}  ")
@@ -93,9 +126,9 @@ class NG(tk.Tk):
 
         for g, p in self.games.items():
             row = tk.Frame(self.list_f, bg=DB, pady=15, padx=20); row.pack(fill="x", pady=5)
-            tk.Label(row, text=g, bg=DB, fg="white", font=("Arial", 13, "bold")).pack(side="left")
+            name = tk.Label(row, text=g, bg=DB, fg="white", font=("Arial", 13, "bold")); name.pack(side="left")
             if g in self.library: tk.Label(row, text="IN LIBRARY", bg=NAV, fg=TXT, font=("Arial", 9), padx=10).pack(side="right")
-            else: ttk.Button(row, text=f"₹{p}", style="Price.TButton", width=12, command=lambda x=g: self.add(x)).pack(side="right")
+            else: ttk.Button(row, text=f"₹{p}", style="Price.TButton", width=12, command=lambda x=g: self.add(x)).pack(side="right"); self.drag.attach(g, row, name)
 
         for g in self.library:
             r = tk.Frame(self.tabs["LIBRARY"], bg=DB, pady=10, padx=20); r.pack(fill="x", pady=2, padx=40)
@@ -111,25 +144,25 @@ class NG(tk.Tk):
     def pay(self):
         cost = sum(self.games[g] for g in self.cart)
         if self.cart and self.wallet >= cost:
-            self.library.extend([g for g in self.cart if g not in self.library])
-            self.wallet -= cost; self.save_data(); self.cart = []; self.lbx.delete(0, "end"); self.refresh(); messagebox.showinfo("OK", "Purchased!")
+            self.db.purchases.buy(self.username, {g: self.games[g] for g in self.cart}, self.wallet - cost)
+            self.load_data(); self.cart = []; self.lbx.delete(0, "end"); self.refresh(); messagebox.showinfo("OK", "Purchased!")
         elif self.cart: messagebox.showerror("Error", "Check funds or cart.")
 
     def reset(self):
         if messagebox.askyesno("Reset", "Wipe all data?"):
-            if os.path.exists(self.file): os.remove(self.file)
+            self.db.users.reset(self.username)
             self.load_data(); self.cart = []; self.lbx.delete(0, "end"); self.refresh()
 
 def reset(self):
         if messagebox.askyesno("Reset", "Wipe all data?"):
-            if os.path.exists(self.file): os.remove(self.file)
+            self.db.users.reset(self.username)
             self.load_data(); self.cart = []; self.lbx.delete(0, "end"); self.refresh()
 
 # --- PASTE EVERYTHING BELOW THIS LINE AT THE BOTTOM OF YOUR FILE ---
 
 class NGext(NG):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, db, username):
+        super().__init__(db, username)
         self.add_wallet_controls()
 
     def add_wallet_controls(self):
@@ -145,8 +178,8 @@ class NGext(NG):
         tk.Label(wm_frame, text="Amount (₹):", bg="#1b2838", fg="white", font=("Arial", 10)).pack(side="left")
         tk.Entry(wm_frame, textvariable=self.amount_var, font=("Arial", 11), width=10).pack(side="left", padx=10)
 
-        self.button_style("Add", "#4c6b22", "white", "#5e8429", 9, (10, 5))
-        self.button_style("Reduce", "#a32a2a", "white", "#c43a3a", 9, (10, 5))
+        button_style(self, "Add", "#4c6b22", "white", "#5e8429", 9, (10, 5))
+        button_style(self, "Reduce", "#a32a2a", "white", "#c43a3a", 9, (10, 5))
         ttk.Button(wm_frame, text="ADD", style="Add.TButton", command=self.add_money).pack(side="left", padx=5)
         ttk.Button(wm_frame, text="REDUCE", style="Reduce.TButton", command=self.reduce_money).pack(side="left", padx=5)
 
@@ -173,5 +206,34 @@ class NGext(NG):
             messagebox.showerror("Error", "Please enter a valid number.")
 
 
+class NGadmin(NGext):
+    """Admin gets the full store plus USERS, GAMES and PURCHASES tabs."""
+
+    def __init__(self, db, username):
+        super().__init__(db, username)
+        self.admin = AdminTabs(self, self.nb, db, on_games_changed=self.reload_games)
+
+    def reload_games(self):
+        self.games = self.db.games.all()
+        for i in reversed(range(len(self.cart))):
+            if self.cart[i] not in self.games: self.cart.pop(i); self.lbx.delete(i)
+        self.refresh()
+
+
+def open_database():
+    try:
+        return Database()
+    except (FileNotFoundError, ValueError, KeyError, mysql.connector.Error) as e:
+        root = tk.Tk(); root.withdraw()
+        messagebox.showerror("Database error", f"Could not connect to MySQL:\n{e}")
+        root.destroy()
+        return None
+
+
 if __name__ == "__main__":
-    NGext().mainloop()
+    db = open_database()
+    user = LoginWindow(db).run() if db else None
+    if user:
+        username, role = user
+        (NGadmin if role == "admin" else NGext)(db, username).mainloop()
+    if db: db.close()
