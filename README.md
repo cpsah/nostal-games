@@ -13,6 +13,8 @@ It is built around the Class 12 Python–MySQL connectivity chapter: `mysql.conn
 | [Flows](docs/flows.md) | Flowcharts: start-up, login, cart, purchase, wallet, admin |
 | [Use cases](docs/use-cases.md) | Actors, use case diagram, use case details, business rules |
 | [Database](docs/database.md) | Schema, ER diagram, queries, transactions, Class 12 connectivity mapping |
+| [Code walkthroughs](docs/walkthroughs/README.md) | Step-by-step tour of each feature with links to the exact code lines, examples, and what changed from the original |
+| [Feature internals](docs/features/README.md) | Code-level walkthrough of each feature: loading screen, login, store and cart, drag and drop, scrolling, purchase, wallet, admin panel, theme |
 | [Changelog](docs/changelog.md) | What changed in each version |
 
 ## Features

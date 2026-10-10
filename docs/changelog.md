@@ -9,7 +9,7 @@
 - **MySQL storage** (`db.py`): users, wallets, libraries and the game catalogue are stored per user in the `nostalgames` database. The database, tables, default games and `admin` account are created on first run.
 - **Drag and drop to cart** (`DragToCart`): drag a game row onto the shopping cart to add it.
 - **Config file:** `db_config.example.ini` template. The real `db_config.ini` is git-ignored.
-- **Documentation:** README, plus [architecture](architecture.md), [flows](flows.md), [use cases](use-cases.md), [database](database.md) and [user guide](user-guide.md).
+- **Documentation:** README, plus [architecture](architecture.md), [flows](flows.md), [use cases](use-cases.md), [database](database.md), [user guide](user-guide.md) per-feature code docs in [features/](features/README.md), and step-by-step [walkthroughs/](walkthroughs/README.md).
 
 ### Changed
 
