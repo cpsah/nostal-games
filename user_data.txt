@@ -1,0 +1,2 @@
+wallet:6500.0
+library:Elden Ring
