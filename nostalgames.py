@@ -1,18 +1,369 @@
+"""NOSTALgames - desktop game store (Tkinter + MySQL).
+
+Run:  python3 nostalgames.py   (set MYSQL_CONFIG below first, see README.md)
+"""
 import tkinter as tk
 from tkinter import ttk, messagebox
-import os
-from turtle import*
-from colorsys import*
+import hashlib
 import mysql.connector
+from turtle import*
 
-from theme import button_style
-from db import Database
-from login import LoginWindow
-from admin import AdminTabs
 
+# ======================================================================
+# ----- Theme -----
+# ======================================================================
 # Theme Shorthand
 B, DB, NAV, LB, TXT, WALT, PRCHS, RED = "#661B49", "#171a21", "#2a475e", "#11F521", "#c7d5e0", "#ffcc00", "#118A1A", "#a32a2a"
 
+
+def button_style(root, name, bg, fg, active_bg, size, padding):
+    # ttk buttons honour custom colours on macOS; tk.Button ignores bg there and hides the text
+    s = ttk.Style(root)
+    s.configure(f"{name}.TButton", background=bg, foreground=fg, font=("Arial", size, "bold"), borderwidth=0, padding=padding)
+    s.map(f"{name}.TButton", background=[("pressed", active_bg), ("active", active_bg)], foreground=[("pressed", fg), ("active", fg)])
+
+
+class ThemedWindow(tk.Tk):
+    """Themed top-level window (used by the login screen)."""
+
+    def __init__(self, title, size):
+        super().__init__()
+        self.title(title); self.geometry(size); self.configure(bg=B)
+        ttk.Style(self).theme_use('clam')
+        self.button_style("Nav", NAV, TXT, "#3a6a8a", 10, (15, 5))
+
+    def button_style(self, name, bg, fg, active_bg, size, padding):
+        button_style(self, name, bg, fg, active_bg, size, padding)
+
+
+# ======================================================================
+# ----- Database -----
+# ======================================================================
+# MySQL connection details - edit these before the first run
+MYSQL_CONFIG = {
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "YOUR_MYSQL_PASSWORD",  # replace with your MySQL password before running
+    "database": "nostalgames",
+}
+ADMIN_PASSWORD = "admin123"  # password of the 'admin' account created on the first run
+
+START_WALLET = 10000.0
+DEFAULT_GAMES = {"Cyberpunk 2077": 2999, "Elden Ring": 3500, "Stardew Valley": 479, "Hollow Knight": 600, "Doom Eternal": 1799, "Forza Horizon 5": 3499, "Forza Horizon 6": 4599, "Counter Strike 2": 1399, "Subnautica 2": 1799, "NBA 2K26": 3999, "Red Dead Redemption 2": 4999, "FC™ 26": 1625}
+
+TABLES = [
+    """CREATE TABLE IF NOT EXISTS users (
+        username VARCHAR(30) PRIMARY KEY,
+        password CHAR(64) NOT NULL,
+        role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+        wallet DECIMAL(10, 2) NOT NULL DEFAULT 10000)""",
+    """CREATE TABLE IF NOT EXISTS games (
+        name VARCHAR(60) PRIMARY KEY,
+        price INT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS purchases (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(30) NOT NULL,
+        game VARCHAR(60) NOT NULL,
+        price INT NOT NULL,
+        bought_on DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (username, game),
+        FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE)""",
+]
+
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+class Database:
+    """Python-MySQL connectivity: connect(), cursor(), execute(), fetchall(), commit()."""
+
+    def __init__(self, config=MYSQL_CONFIG, admin_password=ADMIN_PASSWORD):
+        name = config["database"]
+        if not name.isidentifier():
+            raise ValueError(f"Invalid database name: {name}")
+
+        # autocommit: every SELECT sees the latest data (e.g. edits made in MySQL Workbench); run() opens explicit transactions
+        self.con = mysql.connector.connect(host=config["host"], port=config["port"], user=config["user"], password=config["password"], autocommit=True)
+        self.cur = self.con.cursor()
+        self.cur.execute(f"CREATE DATABASE IF NOT EXISTS {name} CHARACTER SET utf8mb4")
+        self.cur.execute(f"USE {name}")
+        for sql in TABLES:
+            self.cur.execute(sql)
+
+        self.users, self.games, self.purchases = UserTable(self), GameTable(self), PurchaseTable(self)
+        self.games.seed()
+        self.users.seed_admin(admin_password)
+
+    def fetchall(self, sql, params=()):
+        self.cur.execute(sql, params)
+        return self.cur.fetchall()
+
+    def fetchone(self, sql, params=()):
+        self.cur.execute(sql, params)
+        return self.cur.fetchone()
+
+    def run(self, *statements, guard=None):
+        """Execute (sql, params) pairs as one transaction: all succeed or none do.
+        If guard (sql, params) is given it runs first; when it changes no rows nothing is saved and False is returned."""
+        try:
+            self.con.start_transaction()
+            if guard:
+                self.cur.execute(*guard)
+                if self.cur.rowcount == 0:
+                    self.con.rollback()
+                    return False
+            for sql, params in statements:
+                self.cur.execute(sql, params)
+            self.con.commit()
+            return True
+        except mysql.connector.Error:
+            self.con.rollback()
+            raise
+
+    def close(self):
+        self.cur.close(); self.con.close()
+
+
+class UserTable:
+    def __init__(self, db):
+        self.db = db
+
+    def seed_admin(self, password):
+        if not self.db.fetchone("SELECT username FROM users WHERE role = 'admin'"):
+            self.db.run(("INSERT INTO users (username, password, role) VALUES (%s, %s, 'admin')", ("admin", hash_password(password))))
+
+    def login(self, username, password):
+        """Return the role ('user'/'admin') if the credentials match, else None."""
+        row = self.db.fetchone("SELECT role FROM users WHERE username = %s AND password = %s", (username, hash_password(password)))
+        return row[0] if row else None
+
+    def register(self, username, password):
+        try:
+            self.db.run(("INSERT INTO users (username, password) VALUES (%s, %s)", (username, hash_password(password))))
+            return True
+        except mysql.connector.IntegrityError:
+            return False
+
+    def wallet(self, username):
+        return float(self.db.fetchone("SELECT wallet FROM users WHERE username = %s", (username,))[0])
+
+    def set_wallet(self, username, amount):
+        self.db.run(("UPDATE users SET wallet = %s WHERE username = %s", (amount, username)))
+
+    def reset(self, username):
+        self.db.run(("DELETE FROM purchases WHERE username = %s", (username,)),
+                    ("UPDATE users SET wallet = %s WHERE username = %s", (START_WALLET, username)))
+
+    def delete(self, username):
+        self.db.run(("DELETE FROM users WHERE username = %s AND role = 'user'", (username,)))
+
+    def all(self):
+        return self.db.fetchall("""SELECT u.username, u.role, u.wallet, COUNT(p.id)
+                                   FROM users u LEFT JOIN purchases p ON p.username = u.username
+                                   GROUP BY u.username, u.role, u.wallet ORDER BY u.role, u.username""")
+
+
+class GameTable:
+    def __init__(self, db):
+        self.db = db
+
+    def seed(self):
+        if not self.db.fetchone("SELECT COUNT(*) FROM games")[0]:
+            self.db.run(*[("INSERT INTO games (name, price) VALUES (%s, %s)", (n, p)) for n, p in DEFAULT_GAMES.items()])
+
+    def all(self):
+        """Games in the original store order; any extra games added in MySQL come after, A-Z."""
+        order = list(DEFAULT_GAMES)
+        rows = sorted(self.db.fetchall("SELECT name, price FROM games"), key=lambda r: (order.index(r[0]) if r[0] in order else len(order), r[0]))
+        return dict(rows)
+
+    def save(self, name, price):
+        self.db.run(("INSERT INTO games (name, price) VALUES (%s, %s) ON DUPLICATE KEY UPDATE price = %s", (name, price, price)))
+
+    def delete(self, name):
+        self.db.run(("DELETE FROM games WHERE name = %s", (name,)))
+
+
+class PurchaseTable:
+    def __init__(self, db):
+        self.db = db
+
+    def library(self, username):
+        return [r[0] for r in self.db.fetchall("SELECT game FROM purchases WHERE username = %s ORDER BY bought_on", (username,))]
+
+    def buy(self, username, items):
+        """items: {game: price}. Charges the wallet and records every purchase in one transaction.
+        Returns False (nothing saved) if the wallet stored in MySQL can't cover the total."""
+        cost = sum(items.values())
+        return self.db.run(*[("INSERT INTO purchases (username, game, price) VALUES (%s, %s, %s)", (username, g, p)) for g, p in items.items()],
+                           guard=("UPDATE users SET wallet = wallet - %s WHERE username = %s AND wallet >= %s", (cost, username, cost)))
+
+    def all(self):
+        return self.db.fetchall("SELECT username, game, price, bought_on FROM purchases ORDER BY bought_on DESC")
+
+
+# ======================================================================
+# ----- Login window -----
+# ======================================================================
+class LoginWindow(ThemedWindow):
+    """Login / sign-up portal. run() returns (username, role) or None if the window was closed."""
+
+    def __init__(self, db):
+        super().__init__("NOSTALgames - Login", "420x380")
+        self.db, self.user = db, None
+        self.button_style("Login", PRCHS, "white", "#14a01f", 12, 8)
+
+        box = tk.Frame(self, bg=DB, padx=30, pady=30); box.pack(expand=1)
+        tk.Label(box, text="NOSTALgames", font=("Arial", 20, "bold"), bg=DB, fg="white").pack(pady=(0, 20))
+        self.username = self.field(box, "Username")
+        self.password = self.field(box, "Password", show="*")
+
+        ttk.Button(box, text="LOGIN", style="Login.TButton", command=self.login).pack(fill="x", pady=(15, 5))
+        ttk.Button(box, text="REGISTER", style="Nav.TButton", command=self.register).pack(fill="x")
+        self.bind("<Return>", lambda e: self.login())
+
+    def field(self, parent, label, show=""):
+        tk.Label(parent, text=label, bg=DB, fg=TXT, font=("Arial", 10)).pack(anchor="w")
+        var = tk.StringVar()
+        tk.Entry(parent, textvariable=var, show=show, font=("Arial", 12), width=24, bg=B, fg="white", insertbackground="white").pack(pady=(0, 10))
+        return var
+
+    def credentials(self):
+        return self.username.get().strip(), self.password.get()
+
+    def login(self):
+        username, password = self.credentials()
+        role = self.db.users.login(username, password)
+        if not role:
+            messagebox.showerror("Login failed", "Wrong username or password.")
+            return
+        self.user = (username, role)
+        self.destroy()
+
+    def register(self):
+        username, password = self.credentials()
+        if not (username.replace("_", "").isalnum() and len(username) <= 30) or len(password) < 4:
+            messagebox.showerror("Register", "Username: letters, digits or _ (max 30).\nPassword: at least 4 characters.")
+        elif self.db.users.register(username, password):
+            messagebox.showinfo("Register", "Account created. You can log in now.")
+        else:
+            messagebox.showerror("Register", "That username is taken.")
+
+    def run(self):
+        self.mainloop()
+        return self.user
+
+
+# ======================================================================
+# ----- Admin tabs -----
+# ======================================================================
+class AdminTabs:
+    """Adds USERS, GAMES and PURCHASES tabs to an existing notebook (the admin's store window)."""
+
+    def __init__(self, root, notebook, db, on_games_changed):
+        self.db, self.on_games_changed = db, on_games_changed
+        button_style(root, "Nav", NAV, TXT, "#3a6a8a", 10, (15, 5))
+        button_style(root, "Danger", RED, "white", "#c43a3a", 10, (15, 5))
+        s = ttk.Style(root)
+        s.configure("Treeview", background=DB, fieldbackground=DB, foreground=TXT, rowheight=26, font=("Arial", 10))
+        s.configure("Treeview.Heading", background=NAV, foreground="white", font=("Arial", 10, "bold"))
+
+        self.tabs = {n: tk.Frame(notebook, bg=B) for n in ["USERS", "GAMES", "PURCHASES"]}
+        for n, f in self.tabs.items(): notebook.add(f, text=f" {n} ")
+        notebook.bind("<<NotebookTabChanged>>", lambda e: self.refresh(), add="+")
+
+        self.build_users(); self.build_games(); self.build_purchases()
+        self.refresh()
+
+    def table(self, parent, columns):
+        tree = ttk.Treeview(parent, columns=columns, show="headings", selectmode="browse")
+        for c in columns: tree.heading(c, text=c.upper()); tree.column(c, anchor="w")
+        tree.pack(fill="both", expand=1, padx=20, pady=(20, 10))
+        return tree
+
+    def toolbar(self, parent):
+        bar = tk.Frame(parent, bg=B); bar.pack(fill="x", padx=20, pady=(0, 20))
+        return bar
+
+    def selected(self, tree):
+        sel = tree.selection()
+        return tree.item(sel[0], "values") if sel else None
+
+    @staticmethod
+    def fill(tree, rows):
+        tree.delete(*tree.get_children())
+        for r in rows: tree.insert("", "end", values=r)
+
+    # --- Users ---
+    def build_users(self):
+        self.users_tree = self.table(self.tabs["USERS"], ("username", "role", "wallet", "games"))
+        bar = self.toolbar(self.tabs["USERS"])
+        ttk.Button(bar, text="RESET USER", style="Nav.TButton", command=self.reset_user).pack(side="left")
+        ttk.Button(bar, text="DELETE USER", style="Danger.TButton", command=self.delete_user).pack(side="right")
+
+    def selected_user(self):
+        row = self.selected(self.users_tree)
+        if not row or row[1] != "user":
+            messagebox.showerror("Users", "Select a non-admin user first.")
+            return None
+        return row[0]
+
+    def reset_user(self):
+        u = self.selected_user()
+        if u and messagebox.askyesno("Reset", f"Clear {u}'s library and reset wallet?"):
+            self.db.users.reset(u); self.refresh()
+
+    def delete_user(self):
+        u = self.selected_user()
+        if u and messagebox.askyesno("Delete", f"Delete user {u} and all their purchases?"):
+            self.db.users.delete(u); self.refresh()
+
+    # --- Games ---
+    def build_games(self):
+        self.games_tree = self.table(self.tabs["GAMES"], ("name", "price"))
+        self.games_tree.bind("<<TreeviewSelect>>", self.load_game_form)
+        bar = self.toolbar(self.tabs["GAMES"])
+        self.game_name, self.game_price = tk.StringVar(), tk.StringVar()
+        for label, var, width in (("Name", self.game_name, 28), ("Price (₹)", self.game_price, 10)):
+            tk.Label(bar, text=label, bg=B, fg="white", font=("Arial", 10)).pack(side="left")
+            tk.Entry(bar, textvariable=var, width=width, font=("Arial", 11)).pack(side="left", padx=(5, 15))
+        ttk.Button(bar, text="ADD / UPDATE", style="Nav.TButton", command=self.save_game).pack(side="left")
+        ttk.Button(bar, text="REMOVE GAME", style="Danger.TButton", command=self.delete_game).pack(side="right")
+
+    def load_game_form(self, _event):
+        row = self.selected(self.games_tree)
+        if row: self.game_name.set(row[0]); self.game_price.set(row[1])
+
+    def save_game(self):
+        name, price = self.game_name.get().strip(), self.game_price.get().strip()
+        if not name or len(name) > 60 or not price.isdigit():
+            messagebox.showerror("Games", "Enter a name (max 60 chars) and a whole-number price.")
+            return
+        self.db.games.save(name, int(price)); self.games_changed()
+
+    def delete_game(self):
+        row = self.selected(self.games_tree)
+        if row and messagebox.askyesno("Remove", f"Remove {row[0]} from the store? Owners keep it in their library."):
+            self.db.games.delete(row[0]); self.games_changed()
+
+    def games_changed(self):
+        self.refresh(); self.on_games_changed()
+
+    # --- Purchases ---
+    def build_purchases(self):
+        self.purchases_tree = self.table(self.tabs["PURCHASES"], ("username", "game", "price", "bought_on"))
+
+    def refresh(self):
+        self.fill(self.users_tree, self.db.users.all())
+        self.fill(self.games_tree, self.db.games.all().items())
+        self.fill(self.purchases_tree, self.db.purchases.all())
+
+
+# ======================================================================
+# ----- Loading screen, store, cart, library, settings -----
+# ======================================================================
 def load_screen():
     setup(800, 600)  # window centred on the screen
     getcanvas().update()
@@ -171,12 +522,6 @@ class NG(tk.Tk):
             self.db.users.reset(self.username)
             self.load_data(); self.cart = []; self.lbx.delete(0, "end"); self.refresh()
 
-def reset(self):
-        if messagebox.askyesno("Reset", "Wipe all data?"):
-            self.db.users.reset(self.username)
-            self.load_data(); self.cart = []; self.lbx.delete(0, "end"); self.refresh()
-
-# --- PASTE EVERYTHING BELOW THIS LINE AT THE BOTTOM OF YOUR FILE ---
 
 class NGext(NG):
     def __init__(self, db, username):
@@ -241,7 +586,7 @@ class NGadmin(NGext):
 def open_database():
     try:
         return Database()
-    except (FileNotFoundError, ValueError, KeyError, mysql.connector.Error) as e:
+    except (ValueError, KeyError, mysql.connector.Error) as e:
         root = tk.Tk(); root.withdraw()
         messagebox.showerror("Database error", f"Could not connect to MySQL:\n{e}")
         root.destroy()

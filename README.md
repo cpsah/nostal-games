@@ -1,21 +1,8 @@
 # NOSTALgames
 
-A desktop game store built with Python **Tkinter** and **MySQL**. Users log in, browse the store, add games to a cart (click or drag and drop), buy them with a wallet, and see them in their library. Admins get the same store plus tabs to manage users and games and to view all purchases.
+A desktop game store built with Python **Tkinter** and **MySQL**, in a single file: `nostalgames.py`. Users log in, browse the store, add games to a cart (click or drag and drop), buy them with a wallet, and see them in their library. Admins get the same store plus tabs to manage users and games and to view all purchases.
 
 It is built around the Class 12 Python–MySQL connectivity chapter: `mysql.connector.connect()`, `cursor()`, `execute()` with `%s` placeholders, `fetchone()` / `fetchall()` and `commit()`.
-
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [User guide](docs/user-guide.md) | Using the store as a player and as an admin |
-| [Architecture](docs/architecture.md) | Modules, class diagram, runtime and purchase flow |
-| [Flows](docs/flows.md) | Flowcharts: start-up, login, cart, purchase, wallet, admin |
-| [Use cases](docs/use-cases.md) | Actors, use case diagram, use case details, business rules |
-| [Database](docs/database.md) | Schema, ER diagram, queries, transactions, Class 12 connectivity mapping |
-| [Code walkthroughs](docs/walkthroughs/README.md) | Step-by-step tour of each feature with links to the exact code lines, examples, and what changed from the original |
-| [Feature internals](docs/features/README.md) | Code-level walkthrough of each feature: loading screen, login, store and cart, drag and drop, scrolling, purchase, wallet, admin panel, theme |
-| [Changelog](docs/changelog.md) | What changed in each version |
 
 ## Features
 
@@ -33,7 +20,7 @@ It is built around the Class 12 Python–MySQL connectivity chapter: `mysql.conn
 
 ## Requirements
 
-- **Python 3.11+** with Tkinter. On macOS 14 or later use a Tk version of 8.6.13 or newer; older Tk builds (such as the one bundled with Python 3.11.4 from python.org) can drop or delay mouse clicks.
+- **Python 3.11+** with Tkinter. On macOS 14 or later use Tk 8.6.13 or newer; older Tk builds (such as the one bundled with Python 3.11.4 from python.org) can drop or delay mouse clicks.
 - **MySQL Server 8.x**, running locally or reachable over the network.
 - Python package: `mysql-connector-python`.
 
@@ -56,25 +43,20 @@ python3 -c "import tkinter; print(tkinter.Tcl().eval('info patchlevel'))"
 
 2. **Configure the database connection**
 
-   ```bash
-   cp db_config.example.ini db_config.ini
+   Open `nostalgames.py` and edit the settings near the top of the Database section:
+
+   ```python
+   MYSQL_CONFIG = {
+       "host": "localhost",
+       "port": 3306,
+       "user": "root",
+       "password": "YOUR_MYSQL_PASSWORD",  # replace with your MySQL password before running
+       "database": "nostalgames",
+   }
+   ADMIN_PASSWORD = "admin123"  # password of the 'admin' account created on the first run
    ```
 
-   Edit `db_config.ini` and fill in your MySQL details:
-
-   ```ini
-   [mysql]
-   host = localhost
-   port = 3306
-   user = root
-   password = your_mysql_password
-   database = nostalgames
-
-   [app]
-   admin_password = admin123
-   ```
-
-   `db_config.ini` is git-ignored so your password is never committed.
+   **Warning:** these values are stored in the source file. Do not commit or share `nostalgames.py` with your real MySQL password in it.
 
 3. **Run**
 
@@ -84,11 +66,18 @@ python3 -c "import tkinter; print(tkinter.Tcl().eval('info patchlevel'))"
 
    On the first run the app creates the `nostalgames` database, its three tables, the 12 default games and an `admin` account. Later runs keep existing data.
 
+## How it runs
+
+1. The turtle loading animation plays, then closes.
+2. The login window opens. Register a new account, or log in.
+3. A normal user gets the store window (`NGext`). The `admin` account gets the admin window (`NGadmin`): the store plus USERS, GAMES and PURCHASES tabs.
+4. When the window is closed, the MySQL connection is closed.
+
 ## Logging in
 
 | Account | How |
 |---|---|
-| Admin | Username `admin`, password from `admin_password` in `db_config.ini` (default `admin123`). Change it before the first run. |
+| Admin | Username `admin`, password from `ADMIN_PASSWORD` in `nostalgames.py` (default `admin123`). Change it before the first run. |
 | User | Type a new username (letters, digits, `_`, max 30) and password (min 4 characters), click **REGISTER**, then **LOGIN**. |
 
 To add a user directly in MySQL, hash the password with `SHA2`:
@@ -107,23 +96,24 @@ INSERT INTO users (username, password, role) VALUES ('teacher', SHA2('admin456',
 | `games` | `name` (PK), `price` |
 | `purchases` | `id` (PK, auto-increment), `username` (FK to `users`, cascade delete), `game`, `price`, `bought_on`; one row per user per game |
 
-A purchase charges the wallet and records the games in one transaction, so either everything is saved or nothing is. Removing a game from the store does not remove it from the libraries of people who already bought it.
+A purchase charges the wallet and records the games in one transaction, so either everything is saved or nothing is. The wallet update runs first as a guard (`WHERE wallet >= cost`); if it changes no rows, the transaction is rolled back. Removing a game from the store does not remove it from the libraries of people who already bought it.
 
-## Project structure
+## Code layout
 
-| File | Purpose |
+Everything lives in `nostalgames.py`, split into sections:
+
+| Section | Contents |
 |---|---|
-| `nostalgames.py` | Entry point: loading screen, store window (`NG`, `NGext`), admin window (`NGadmin`), drag and drop (`DragToCart`) |
-| `login.py` | Login and registration window |
-| `admin.py` | Admin tabs: users, games, purchases (`AdminTabs`) |
-| `db.py` | MySQL connection, table creation, starting data, and all queries (`Database`, `UserTable`, `GameTable`, `PurchaseTable`) |
-| `theme.py` | Shared colours and `ttk` button styles |
-| `db_config.example.ini` | Template for `db_config.ini` |
+| Theme | Colour constants, `button_style()` for `ttk` buttons, `ThemedWindow` base window |
+| Database | `MYSQL_CONFIG` and `ADMIN_PASSWORD` settings, `Database` (connection, table creation, `run()` transactions), `UserTable`, `GameTable`, `PurchaseTable`, `hash_password()` |
+| Login window | `LoginWindow`: login and registration; `run()` returns `(username, role)` |
+| Admin tabs | `AdminTabs`: USERS, GAMES and PURCHASES tabs added to the admin's notebook |
+| Store | `load_screen()` turtle animation, `DragToCart`, `NG` (store, cart, library, settings), `NGext` (wallet controls), `NGadmin` (store + admin tabs) |
+| Entry point | `open_database()` and the `__main__` block |
 
 ## Troubleshooting
 
-- **"Could not connect to MySQL: Access denied"**: wrong `user` / `password` in `db_config.ini`. Use the same credentials as in MySQL Workbench.
-- **"db_config.ini not found"**: copy `db_config.example.ini` to `db_config.ini` (step 2).
+- **"Could not connect to MySQL: Access denied"**: wrong `user` / `password` in `MYSQL_CONFIG`. Use the same credentials as in MySQL Workbench.
 - **`ModuleNotFoundError: No module named 'mysql'`**: run with `.venv/bin/python`, not the system `python3`.
 - **`No module named '_tkinter'`**: your Python has no Tk; on Homebrew run `brew install python-tk@3.12`.
 - **Tables not visible in MySQL Workbench**: click the refresh icon in the **Schemas** panel, then open `nostalgames` → Tables.
